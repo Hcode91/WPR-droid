@@ -1323,6 +1323,7 @@ namespace WPR.Wp8Native
             Log($"guest fps={(_presented - _statsPresented) / seconds:0.0} frames={_presented} drawn={_drawn} " +
                 $"longest-gap={_longestGapTicks * 1000 / System.Diagnostics.Stopwatch.Frequency}ms hitches>50ms={_hitches} gc-pause={(gcPause - _statsGcPause).TotalMilliseconds:0}ms " +
                 $"host updates={_hostUpdates} draws={_hostDraws} " +
+                $"events={_emulator?.ProcessEventsCalls} drain-turns={_emulator?.DeferredDrainTurns} present-clock={_emulator?.Stubs.ClockPresentFrames} " +
                 $"guest-wait={Interlocked.Exchange(ref _guestWaitTicks, 0) * 1000 / System.Diagnostics.Stopwatch.Frequency / Math.Max(1, _presented - _statsPresented)}ms/frame " +
                 $"file-io={((_emulator?.Stubs.Files.IoTicks ?? 0) - _statsIoTicks) * 1000 / System.Diagnostics.Stopwatch.Frequency}ms/{(_emulator?.Stubs.Files.IoCalls ?? 0) - _statsIoCalls} " +
                 $"drawlist-build total={build * 1000 / System.Diagnostics.Stopwatch.Frequency}ms textures={_textures.Count} " +

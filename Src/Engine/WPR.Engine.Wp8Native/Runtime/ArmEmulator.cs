@@ -311,6 +311,9 @@ namespace WPR.Wp8Native
         /// <summary>How many times the image got round its own main loop.</summary>
         public int ProcessEventsCalls => _winRt.ProcessEventsCalls;
 
+        /// <summary>ProcessEvents turns that first ran queued work (diagnostic).</summary>
+        public int DeferredDrainTurns => _winRt.DeferredDrainTurns;
+
         /// <summary>Pointer events delivered to the image, and what it did with them.</summary>
         public IReadOnlyList<string> InputDelivered => _winRt.InputDelivered;
 

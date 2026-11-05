@@ -134,7 +134,7 @@ namespace WPR.Platform.Android
         /// before the session starts, is enough.
         ///
         /// <para>A "play with logging" run turns on what a black or frozen WP8 screen needs:
-        /// a full trace of three frames' GPU commands about ten seconds in (every draw with its
+        /// a full trace of three frames' GPU commands about twenty seconds in (every draw with its
         /// shaders, textures, viewport and states), PNGs of every render target in those frames,
         /// each shader's bytecode, and the whole file log. All of it lands under
         /// <c>Logs/wp8-debug/</c>, which the log export collects. A file
@@ -149,7 +149,7 @@ namespace WPR.Platform.Android
                 {
                     string root = System.IO.Path.Combine(Configuration.Current!.DataPath(WPR.Common.SessionLog.FolderName), "wp8-debug");
                     if (System.IO.Directory.Exists(root)) System.IO.Directory.Delete(root, recursive: true);
-                    SetIfUnset("WPR_WP8_GPU_TRACE", "600-602");
+                    SetIfUnset("WPR_WP8_GPU_TRACE", "1200-1202");
                     SetIfUnset("WPR_WP8_GPU_DUMP", System.IO.Path.Combine(root, "targets"));
                     SetIfUnset("WPR_WP8_SHADER_DUMP", System.IO.Path.Combine(root, "shaders"));
                     SetIfUnset("WPR_WP8_FILE_LOG", "1");

@@ -354,6 +354,9 @@ namespace WPR.Wp8Native
         /// <summary>How many times the image got round its own main loop.</summary>
         public int ProcessEventsCalls { get; private set; }
 
+        /// <summary>ProcessEvents turns that first ran queued work (diagnostic, for the fps line).</summary>
+        public int DeferredDrainTurns { get; private set; }
+
         /// <summary>A property getter returning a WinRT boolean.</summary>
         private Action Boolean(bool value) => () =>
         {
@@ -1515,52 +1518,58 @@ namespace WPR.Wp8Native
                         // Socket events (WSAEventSelect) and overlapped completions, so a wait on a WSAEVENT sees them.
                         _emulator.Stubs.Winsock.Pump();
                         QueueDueTimers();
+                        long resumeAt = _emulator.ReturnAddress;
                         if (_emulator.PendingDeferredCalls > 0)
                         {
-                            long resumeAfterDrain = _emulator.ReturnAddress;
+                            // The queued work runs first, then this turn goes on as any other:
+                            // counted, with input and the other threads. It used to return
+                            // straight to the image after the drain, so a game that queues work
+                            // every frame never had a counted turn - its clock stood still and
+                            // no tap ever reached it.
+                            DeferredDrainTurns++;
                             Return(HResultOk);
-                            _emulator.DrainDeferredCalls(() =>
-                            {
-                                Return(HResultOk);
-                                _emulator.ContinueAt(resumeAfterDrain);
-                            });
+                            _emulator.DrainDeferredCalls(() => Turn(resumeAt));
                             return;
                         }
 
-                        // A real dispatcher drains the input and system queues here, so this
-                        // is where input belongs. The count is also what says how many times
-                        // the game got round its own main loop.
-                        ProcessEventsCalls++;
-                        BeginInputTurn();
-
-                        long resumeAt = _emulator.ReturnAddress;
-                        Return(HResultOk);
-
-                        void Resume()
-                        {
-                            Return(HResultOk);
-                            if (!DeliverInput(resumeAt))
-                            {
-                                _emulator.ContinueAt(resumeAt);
-                            }
-                        }
-
-                        // Audio first - buffers the host finished are reported to the game, which
-                        // is what keeps a stream fed - then every other guest thread gets a turn,
-                        // as the XAML frame loop gives them (a main loop that never blocks would
-                        // otherwise starve them: Angry Birds' audio thread sat runnable and silent
-                        // for ever), then input. In that order a mixer thread woken by
-                        // OnBufferEnd refills in the same frame; the other way round it waited a
-                        // frame, and a game keeping two 25 ms buffers queued ran dry. Each step
-                        // may tail-call into the image, so nothing may follow them.
-                        void ThreadsThenInput() => _emulator.RunOtherThreads(Resume);
-
-                        if (!_emulator.XAudio2.Pump(ThreadsThenInput))
-                        {
-                            ThreadsThenInput();
-                        }
+                        Turn(resumeAt);
                     }),
                 });
+
+            void Turn(long resumeAt)
+            {
+                // A real dispatcher drains the input and system queues here, so this
+                // is where input belongs. The count is also what says how many times
+                // the game got round its own main loop.
+                ProcessEventsCalls++;
+                BeginInputTurn();
+
+                Return(HResultOk);
+
+                void Resume()
+                {
+                    Return(HResultOk);
+                    if (!DeliverInput(resumeAt))
+                    {
+                        _emulator.ContinueAt(resumeAt);
+                    }
+                }
+
+                // Audio first - buffers the host finished are reported to the game, which
+                // is what keeps a stream fed - then every other guest thread gets a turn,
+                // as the XAML frame loop gives them (a main loop that never blocks would
+                // otherwise starve them: Angry Birds' audio thread sat runnable and silent
+                // for ever), then input. In that order a mixer thread woken by
+                // OnBufferEnd refills in the same frame; the other way round it waited a
+                // frame, and a game keeping two 25 ms buffers queued ran dry. Each step
+                // may tail-call into the image, so nothing may follow them.
+                void ThreadsThenInput() => _emulator.RunOtherThreads(Resume);
+
+                if (!_emulator.XAudio2.Pump(ThreadsThenInput))
+                {
+                    ThreadsThenInput();
+                }
+            }
 
             // ICoreWindow is large. 48 slots was not enough: SetWindow subscribes to an
             // event at slot 56, the read ran off the end of the vtable into the next

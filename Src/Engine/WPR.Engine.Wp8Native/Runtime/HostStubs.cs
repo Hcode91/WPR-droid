@@ -106,7 +106,7 @@ namespace WPR.Wp8Native
                 return _clock;
             }
 
-            long frame = _winRt.ProcessEventsCalls + Volatile.Read(ref ClockFramesSkipped);
+            long frame = _winRt.ProcessEventsCalls + Volatile.Read(ref ClockFramesSkipped) + PresentOnlyFrames();
             if (frame != _clockFrame)
             {
                 _clockFrame = frame;
@@ -182,6 +182,39 @@ namespace WPR.Wp8Native
         private long? _spinOffset;
 
         private long _clockFrame = -1;
+
+        private long _clockEventsSeen = -1;
+        private int _clockPresentsAtEvents;
+        private long _clockPresentFrames;
+
+        /// <summary>
+        /// Frames the image presented without turning its event loop (CoreDispatcher
+        /// ProcessEvents), counted as clock frames. The frame clock follows ProcessEvents, so an
+        /// image that presents frame after frame without one saw its time stand still: a fade
+        /// stayed at its first step for ever (Brotherhood of Violence's logo, faint and stuck).
+        /// One present per ProcessEvents, the normal loop, adds nothing; only presents beyond the
+        /// first in a turn count, so the clock never runs faster than one frame per present.
+        /// </summary>
+        private long PresentOnlyFrames()
+        {
+            int presents = Direct3D.PresentCount;
+            long events = _winRt.ProcessEventsCalls;
+            if (events != _clockEventsSeen)
+            {
+                _clockEventsSeen = events;
+                _clockPresentsAtEvents = presents;
+            }
+            else if (presents - _clockPresentsAtEvents > 1)
+            {
+                _clockPresentFrames += presents - _clockPresentsAtEvents - 1;
+                _clockPresentsAtEvents = presents - 1;
+            }
+
+            return _clockPresentFrames;
+        }
+
+        /// <summary>Clock frames that came from presents alone (diagnostic, for the fps line).</summary>
+        public long ClockPresentFrames => _clockPresentFrames;
 
         /// <summary>
         /// Frames of time the host has added to the guest's clock without a guest frame to go with
