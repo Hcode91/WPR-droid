@@ -113,7 +113,98 @@ namespace WPR.Platform.Android
             bool diagnostic = Intent.GetBooleanExtra(DiagnosticRunDataName, false);
             WPR.Common.WprHostEnvironment.DiagnosticRun = diagnostic;
             if (diagnostic) AddStopAndSendButton();
+            AddPocketOuyaControls();
         }
+
+        /// <summary>
+        /// PocketOuya's in-game controls (WPR-droid): a small menu button at the top left with
+        /// <b>Back</b> (one press of the phone's Back button, for gesture navigation) and <b>Quit</b>.
+        ///
+        /// <para>Quit asks the game to exit and waits for it OFF the UI thread before finishing, so
+        /// the run ends the way a game quitting itself does: WP7 titles get their exit hook, and a
+        /// WP8 native title's session writes its <c>summary:</c> / <c>threads:</c> lines (what it
+        /// called that WPR does not answer, and where each thread is parked). Swiping the game away
+        /// kills the process before any of that. Like the logging button, it takes two taps.</para>
+        /// </summary>
+        private void AddPocketOuyaControls()
+        {
+            float density = Resources!.DisplayMetrics!.Density;
+            int Dp(int dp) => (int)(dp * density);
+            global::Android.Widget.TextView Chip(string text)
+            {
+                var chip = new global::Android.Widget.TextView(this) { Text = text, TextSize = 13, Clickable = true, Focusable = false };
+                chip.SetTextColor(global::Android.Graphics.Color.White);
+                chip.SetBackgroundColor(global::Android.Graphics.Color.Argb(150, 0, 0, 0));
+                chip.SetPadding(Dp(12), Dp(8), Dp(12), Dp(8));
+                return chip;
+            }
+
+            var menu = Chip("☰");
+            menu.Alpha = 0.6f;
+            var back = Chip("Back");
+            var quit = Chip("Quit");
+            var row = new global::Android.Widget.LinearLayout(this) { Orientation = global::Android.Widget.Orientation.Horizontal, Visibility = ViewStates.Gone };
+            var gap = new global::Android.Widget.LinearLayout.LayoutParams(ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent);
+            gap.SetMargins(Dp(6), 0, 0, 0);
+            row.AddView(back, gap);
+            row.AddView(quit, new global::Android.Widget.LinearLayout.LayoutParams(gap));
+
+            menu.Click += (_, _) => row.Visibility = row.Visibility == ViewStates.Visible ? ViewStates.Gone : ViewStates.Visible;
+            back.Click += (_, _) =>
+            {
+                WPR.Engine.GameLoop.IGameHost? host = RunningHost;
+                if (host == null) Finish(); else host.PressBackButton();
+            };
+
+            bool armed = false, quitting = false;
+            quit.Click += (_, _) =>
+            {
+                if (quitting) return;
+                if (!armed)
+                {
+                    armed = true;
+                    quit.Text = "Tap again to quit";
+                    quit.SetBackgroundColor(global::Android.Graphics.Color.Argb(220, 180, 30, 30));
+                    quit.PostDelayed(() =>
+                    {
+                        if (IsDestroyed || !armed) return;
+                        armed = false;
+                        quit.Text = "Quit";
+                        quit.SetBackgroundColor(global::Android.Graphics.Color.Argb(150, 0, 0, 0));
+                    }, 3000);
+                    return;
+                }
+                armed = false;
+                quitting = true;
+                quit.Text = "Quitting…";
+                Common.Log.Info(Common.LogCategory.AppList, "[pocketouya] Quit pressed: asking the game to exit.");
+                if (RunningHost == null) { SetResult(Result.Ok); Finish(); return; }  // still loading: nothing to wind down
+                new System.Threading.Thread(() =>
+                {
+                    try { RunningHost?.RequestExit(); } catch { }
+                    // Long enough for a WP8 session to stop its guest and log its summary.
+                    bool ended = GameLoopFinished.Wait(QuitWaitMs);
+                    Common.Log.Info(Common.LogCategory.AppList, ended
+                        ? "[pocketouya] the game exited."
+                        : $"[pocketouya] the game did not exit within {QuitWaitMs / 1000} s; closing it.");
+                    RunOnUiThread(() => { if (!IsFinishing && !IsDestroyed) { SetResult(Result.Ok); Finish(); } });
+                }) { IsBackground = true, Name = "pocketouya-quit" }.Start();
+            };
+
+            var column = new global::Android.Widget.LinearLayout(this) { Orientation = global::Android.Widget.Orientation.Horizontal };
+            column.AddView(menu);
+            column.AddView(row);
+            var layout = new global::Android.Widget.FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WrapContent, ViewGroup.LayoutParams.WrapContent, GravityFlags.Top | GravityFlags.Start);
+            layout.SetMargins(Dp(10), Dp(10), 0, 0);
+            var overlay = new global::Android.Widget.FrameLayout(this);
+            overlay.AddView(column, layout);
+            // Only the chips take touches: the overlay's empty area passes them through to SDL.
+            AddContentView(overlay, new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MatchParent, ViewGroup.LayoutParams.MatchParent));
+        }
+
+        /// <summary>How long Quit waits for the game to exit before closing it anyway.</summary>
+        private const int QuitWaitMs = 10000;
 
         /// <summary>Intent extra: this launch is a "play with logging" run (see <c>WPR.Shell.DiagnosticRun</c>).</summary>
         public static string DiagnosticRunDataName = "DiagnosticRun";
@@ -137,7 +228,7 @@ namespace WPR.Platform.Android
 
             var button = new global::Android.Widget.TextView(this)
             {
-                Text = "● logging · stop & send report",
+                Text = "● logging · stop",
                 TextSize = 13,
                 Clickable = true,
                 Focusable = false,
@@ -153,13 +244,13 @@ namespace WPR.Platform.Android
                 if (!armed)
                 {
                     armed = true;
-                    button.Text = "tap again to stop the game and send the log";
+                    button.Text = "tap again to stop the game (logs stay on the phone)";
                     button.SetBackgroundColor(global::Android.Graphics.Color.Argb(220, 180, 30, 30));
                     button.PostDelayed(() =>
                     {
                         if (IsDestroyed || !armed) return;
                         armed = false;
-                        button.Text = "● logging · stop & send report";
+                        button.Text = "● logging · stop";
                         button.SetBackgroundColor(global::Android.Graphics.Color.Argb(170, 0, 0, 0));
                     }, 3000);
                     return;
