@@ -163,7 +163,7 @@ namespace WPR.Platform.Android
                         string line = raw.Trim();
                         int eq = line.IndexOf('=');
                         if (line.Length == 0 || line.StartsWith('#') || eq <= 0) continue;
-                        Environment.SetEnvironmentVariable(line[..eq].Trim(), line[(eq + 1)..].Trim());
+                        System.Environment.SetEnvironmentVariable(line[..eq].Trim(), line[(eq + 1)..].Trim());
                         Common.Log.Info(Common.LogCategory.AppList, $"[pocketouya] wp8_debug.txt: {line}");
                     }
                 }
@@ -175,9 +175,9 @@ namespace WPR.Platform.Android
 
             static void SetIfUnset(string name, string value)
             {
-                if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(name)))
+                if (string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable(name)))
                 {
-                    Environment.SetEnvironmentVariable(name, value);
+                    System.Environment.SetEnvironmentVariable(name, value);
                     Common.Log.Info(Common.LogCategory.AppList, $"[pocketouya] logging run: {name}={value}");
                 }
             }
