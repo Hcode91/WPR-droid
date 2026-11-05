@@ -112,6 +112,7 @@ namespace WPR.Platform.Android
             // and a button over the game that ends it and has the launcher send the log.
             bool diagnostic = Intent.GetBooleanExtra(DiagnosticRunDataName, false);
             WPR.Common.WprHostEnvironment.DiagnosticRun = diagnostic;
+            ApplyDiagnosticSwitches(diagnostic);
             if (diagnostic) AddStopAndSendButton();
             AddPocketOuyaControls();
         }
@@ -126,6 +127,62 @@ namespace WPR.Platform.Android
         /// called that WPR does not answer, and where each thread is parked). Swiping the game away
         /// kills the process before any of that. Like the logging button, it takes two taps.</para>
         /// </summary>
+        /// <summary>
+        /// WPR-droid: the WP8 runtime's diagnostic switches are environment variables
+        /// (<c>WPR_WP8_*</c>), which cannot be set on a phone. They are read through
+        /// <c>Environment.GetEnvironmentVariable</c>, so setting them here, in the game process
+        /// before the session starts, is enough.
+        ///
+        /// <para>A "play with logging" run turns on what a black or frozen WP8 screen needs:
+        /// a full trace of three frames' GPU commands about ten seconds in (every draw with its
+        /// shaders, textures, viewport and states), PNGs of every render target in those frames,
+        /// each shader's bytecode, and the whole file log. All of it lands under
+        /// <c>Logs/wp8-debug/</c>, which the log export collects. A file
+        /// <c>wp8_debug.txt</c> beside <c>fna3d_driver.txt</c>, with <c>NAME=value</c> lines, sets
+        /// any switch for every run and wins over these defaults.</para>
+        /// </summary>
+        private void ApplyDiagnosticSwitches(bool diagnostic)
+        {
+            try
+            {
+                if (diagnostic)
+                {
+                    string root = System.IO.Path.Combine(Configuration.Current!.DataPath(WPR.Common.SessionLog.FolderName), "wp8-debug");
+                    if (System.IO.Directory.Exists(root)) System.IO.Directory.Delete(root, recursive: true);
+                    SetIfUnset("WPR_WP8_GPU_TRACE", "600-602");
+                    SetIfUnset("WPR_WP8_GPU_DUMP", System.IO.Path.Combine(root, "targets"));
+                    SetIfUnset("WPR_WP8_SHADER_DUMP", System.IO.Path.Combine(root, "shaders"));
+                    SetIfUnset("WPR_WP8_FILE_LOG", "1");
+                }
+
+                string file = System.IO.Path.Combine(GetExternalFilesDir(null)!.AbsolutePath, "wp8_debug.txt");
+                if (System.IO.File.Exists(file))
+                {
+                    foreach (string raw in System.IO.File.ReadAllLines(file))
+                    {
+                        string line = raw.Trim();
+                        int eq = line.IndexOf('=');
+                        if (line.Length == 0 || line.StartsWith('#') || eq <= 0) continue;
+                        Environment.SetEnvironmentVariable(line[..eq].Trim(), line[(eq + 1)..].Trim());
+                        Common.Log.Info(Common.LogCategory.AppList, $"[pocketouya] wp8_debug.txt: {line}");
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Common.Log.Warn(Common.LogCategory.AppList, "[pocketouya] diagnostic switches not applied: " + ex.Message);
+            }
+
+            static void SetIfUnset(string name, string value)
+            {
+                if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable(name)))
+                {
+                    Environment.SetEnvironmentVariable(name, value);
+                    Common.Log.Info(Common.LogCategory.AppList, $"[pocketouya] logging run: {name}={value}");
+                }
+            }
+        }
+
         private void AddPocketOuyaControls()
         {
             float density = Resources!.DisplayMetrics!.Density;
