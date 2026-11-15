@@ -170,6 +170,7 @@ namespace WPR.Platform.Android
                 // ShareLinkTask / ShareStatusTask go to the system chooser (ACTION_SEND).
                 caps.ShareSheet(new WPR.Launchers.AndroidIntent.AndroidShareSheet(_context));
 
+#if !POCKETOUYA
                 // WPR Hub: leaderboards, and crash reports for players who opted in. One instance
                 // per process: this descriptor is applied again on a graphics-driver change, and
                 // the module's queues live on disk, so the launcher and :game share them anyway.
@@ -180,6 +181,13 @@ namespace WPR.Platform.Android
                     id => WPR.GameIconStore.Find(id) != null, WPR.GameIconStore.SaveDownloaded,
                     WPR.ApplicationInstaller.InstalledTitlesForHub, WPR.XnaAchievementSeeder.InstalledCataloguesForHub);
                 if (Hub != null) caps.Online(Hub.Services);
+#else
+                // PocketOuya's build (POCKETOUYA, defined by its winphone/prepare-wpr.py) talks to
+                // no server: no WPR Hub, so no install receipts, crash or compatibility reports,
+                // title details, presence or leaderboards. Every online slot stays empty, which
+                // the engine treats as "this platform has none" (reports become no-ops, boards
+                // read empty). Achievements are still recorded on the phone.
+#endif
 
                 // A game process that died without ending its run is a native crash only if
                 // Android does not say otherwise: an APK install or a force stop kills it too.
@@ -207,7 +215,9 @@ namespace WPR.Platform.Android
         /// overrule it. Letting the probe win would collapse the second case into the first and
         /// leave that person with no way out again.</para>
         /// </summary>
+#if !POCKETOUYA
         private static WPR.Online.Hub.HubOnline? Hub;
+#endif
 
         /// <summary>The installed versionName, or "unknown" without a context.</summary>
         private string InstalledVersion()
