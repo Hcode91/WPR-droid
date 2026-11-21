@@ -559,6 +559,10 @@ namespace WPR.Wp8Native
             // After every family: what the census still listed (HostStubs.Remainder.cs) and ConcRT/PPL
             // (ConcurrencyRuntime.cs). Every name in them is one no earlier family registers.
             RegisterRemainderImports();
+
+            // Windows CE's COREDLL entries that differ from their WP8 namesakes (CoreDllLibrary.cs).
+            // Last, so the soft-float wrappers wrap the final WP8 handlers.
+            RegisterCoreDll();
         }
 
         /// <summary>Aligned block -> (block actually allocated, size asked for).</summary>
@@ -932,6 +936,11 @@ namespace WPR.Wp8Native
         {
             int split = fullName.IndexOf('!');
             string function = split >= 0 ? fullName[(split + 1)..] : fullName;
+            if (split >= 0 && CoreDllOrdinals.IsCoreDll(fullName[..split]) && _handlers.TryGetValue(CoreDllPrefix + function, out Action? ce))
+            {
+                return ce;
+            }
+
             return !function.StartsWith('#') && _handlers.TryGetValue(function, out Action? handler) ? handler : null;
         }
 
@@ -947,6 +956,13 @@ namespace WPR.Wp8Native
 
             int split = fullName.IndexOf('!');
             string function = split >= 0 ? fullName[(split + 1)..] : fullName;
+
+            // A Windows CE COREDLL import whose CE behaviour differs from its WP8 namesake.
+            if (split >= 0 && CoreDllOrdinals.IsCoreDll(fullName[..split]) && _handlers.TryGetValue(CoreDllPrefix + function, out Action? ce))
+            {
+                ce();
+                return;
+            }
 
             // Imports by ordinal are only unique per DLL.
             if (function.StartsWith('#') && TryWinsockOrdinal(fullName))
@@ -1652,7 +1668,11 @@ namespace WPR.Wp8Native
         {
             RestoreCalleeSaved(frame);
             _emulator.WriteRegister(Arm.UC_ARM_REG_SP, _funcletStack);
-            return _emulator.CallEmulated(name, funclet, [0, frame.FramePointer], onReturn, recycle: true);
+            // Windows CE's funclets take the establisher frame in r3 (adds r7, r3, #0).
+            long[] arguments = _emulator.ExceptionModel.WindowsCe
+                ? [0, frame.FramePointer, 0, frame.FramePointer]
+                : [0, frame.FramePointer];
+            return _emulator.CallEmulated(name, funclet, arguments, onReturn, recycle: true);
         }
 
         /// <summary>

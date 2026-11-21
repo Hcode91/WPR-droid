@@ -209,7 +209,9 @@ namespace WPR.Wp8Native
                        or "combase" or "rpcrt4" or "advapi32" or "ws2_32" or "d3d11" or "dxgi" or "d2d1"
                        or "dwrite" or "mfplat" or "mmdevapi" or "phoneappmodelhost" or "phoneaudioses"
                        or "windowscodecs" or "bcrypt" or "crypt32" or "winhttp" or "wininet" or "urlmon"
-                       or "iphlpapi" or "shlwapi" or "shell32" or "gdi32" or "winmm" or "dsound" or "xboxlive";
+                       or "iphlpapi" or "shlwapi" or "shell32" or "gdi32" or "winmm" or "dsound" or "xboxlive"
+                       // Windows CE (WP7 native code): COREDLL is its kernel, CRT and Win32 in one; WS2 its Winsock.
+                       or "coredll" or "ws2";
         }
 
         // -----------------------------------------------------------------------------
@@ -463,7 +465,7 @@ namespace WPR.Wp8Native
                 return null;
             }
 
-            if (image.Machine != PeImage.MachineArmNt || image.IsManaged)
+            if (!image.IsArm || image.IsManaged)
             {
                 ModuleLog.Add($"{name}: {(image.IsManaged ? "a managed assembly" : $"machine 0x{image.Machine:X4}")}, not an ARM native image; its imports stay host stubs");
                 error = ErrorBadExeFormat;

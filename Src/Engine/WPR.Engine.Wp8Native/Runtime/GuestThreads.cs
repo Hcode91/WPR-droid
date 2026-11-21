@@ -409,6 +409,24 @@ namespace WPR.Wp8Native
         private static bool WokenByWait(GuestThread t) =>
             t.Why is { } why && why != "time slice" && !why.Contains("yield", StringComparison.Ordinal);
 
+        /// <summary>
+        /// Whether a thread other than the current one could run now. For a host loop that waits
+        /// on the OS when the guest has nothing to do, and must not when a worker is busy.
+        /// </summary>
+        public bool OtherThreadRunnable()
+        {
+            GuestThread me = CurrentThread;
+            foreach (GuestThread t in _threads)
+            {
+                if (t != me && !t.Finished && t.Registers is not null && (t.Ready is null || t.Ready()))
+                {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
         private GuestThread? PickNext(GuestThread except)
         {
             // A worker that blocks hands the CPU to another worker whose wait it may just have

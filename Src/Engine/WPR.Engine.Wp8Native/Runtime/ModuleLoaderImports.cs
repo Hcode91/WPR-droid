@@ -13,7 +13,7 @@ namespace WPR.Wp8Native
         private const uint GetModuleHandleExFlagFromAddress = 0x4;
 
         /// <summary>The image an unwound frame's RVAs are relative to (the main image for a frame that predates multi-module unwinding).</summary>
-        private long FrameBase(UnwoundFrame frame) => frame.ImageBase != 0 ? frame.ImageBase : _emulator.ImageBase;
+        private long FrameBase(UnwoundFrame frame) => _emulator.ExceptionModel.BaseOf(frame);
 
         private void SetLoaderError(int error) => Files.LoaderLastError = error;
 

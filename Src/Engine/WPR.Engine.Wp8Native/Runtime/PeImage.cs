@@ -45,6 +45,16 @@ namespace WPR.Wp8Native
         /// <summary>IMAGE_FILE_MACHINE_ARMNT - ARMv7 in Thumb-2 encoding.</summary>
         public const ushort MachineArmNt = 0x01C4;
 
+        /// <summary>
+        /// IMAGE_FILE_MACHINE_THUMB: Windows CE's ARM image (WP7 native code). Thumb-2 with ARM
+        /// interworking, the same instruction set WP8 runs; only the header and the import of
+        /// COREDLL instead of the Win32 DLLs differ.
+        /// </summary>
+        public const ushort MachineArmThumb = 0x01C2;
+
+        /// <summary>An ARM image this loader can run: WP8's ARMNT or a Windows CE Thumb image.</summary>
+        public bool IsArm => Machine is MachineArmNt or MachineArmThumb;
+
         private readonly byte[] _raw;
         private readonly PeSection[] _sections;
 
@@ -301,8 +311,10 @@ namespace WPR.Wp8Native
                     }
 
                     // High bit set means the function is imported by ordinal, not by name.
+                    // A Windows CE image imports COREDLL by ordinal only; it is named from
+                    // CoreDllOrdinals so the host stubs can match it as they match any name.
                     string name = (entry & 0x80000000) != 0
-                        ? $"#{entry & 0xFFFF}"
+                        ? (CoreDllOrdinals.IsCoreDll(dll) ? CoreDllOrdinals.Name(entry & 0xFFFF) : null) ?? $"#{entry & 0xFFFF}"
                         : ReadCString(RvaToOffset(entry)!.Value + 2); // skip the 2-byte hint
 
                     imports.Add(new ImportedFunction(dll, name, slotRva));

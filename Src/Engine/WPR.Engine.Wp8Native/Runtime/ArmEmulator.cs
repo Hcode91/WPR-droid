@@ -134,7 +134,7 @@ namespace WPR.Wp8Native
                 GuestThreadStacks.Clear();
             }
 
-            if (image.Machine != PeImage.MachineArmNt)
+            if (!image.IsArm)
             {
                 throw new NotSupportedException(
                     $"Expected an ARMNT image (0x{PeImage.MachineArmNt:X4}), got 0x{image.Machine:X4}.");
@@ -151,7 +151,7 @@ namespace WPR.Wp8Native
             // it has to come after the scratch regions exist and before anything runs.
             _strings = new HStringHeap(this);
             Unwinder = new ArmUnwinder(image, this);
-            ExceptionModel = new CxxExceptionModel(this, image.ImageBase);
+            ExceptionModel = new CxxExceptionModel(this, image.ImageBase, windowsCe: image.Machine == PeImage.MachineArmThumb);
             _winRt = new WinRtRuntime(this, _strings);
 
             // Binding the main image's imports maps every package DLL it needs, recursively

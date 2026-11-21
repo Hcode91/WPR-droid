@@ -975,6 +975,16 @@ namespace WPR
                 // its fields), which NREs e.g. Assassin's Creed XNAGame.
                 SignedInGamer.Reset();
 
+                // WP7 native interop (ComBridge.RegisterComDll): a title's own native ARM DLL runs on
+                // the WP8 runtime's emulator, created only if the title registers one. Disposed and
+                // cleared in ResetWprSingletons.
+                {
+                    string comFolder = folderPath;
+                    string comSandbox = WPR.WindowsCompability.PerGameIsolatedStorage.GameRoot(app.ProductId!);
+                    WPR.Xna.Rhi.NativeComBackend.SetFactory(
+                        () => new WPR.Wp8Native.Wp7ComHost(comFolder, comSandbox, msg => Trace.WriteLine(msg)));
+                }
+
                 // CRITICAL: the entire launch (ctor + lifecycle + Game.Dispose) is wrapped
                 // in an outer try/finally so the teardown block at the bottom (which runs
                 // TeardownAudioState, ResetWprSingletons — including ResetSiblingRegistry
@@ -1932,6 +1942,11 @@ namespace WPR
         {
             // The Xbox Live host is keyed by the title that just ran.
             WPR.XboxLive.XboxLiveBackend.SetHost(null);
+
+            // The WP7 native code of the title that just ran (its emulator thread, its pinned arrays).
+            try { WPR.Xna.Rhi.NativeComBackend.Reset(); }
+            catch (Exception ex) { Log.Warn(LogCategory.AppList, $"NativeComBackend.Reset threw: {ex.Message}"); }
+            WPR.Xna.Compat.PinnedArrays.Reset();
 
             // Application.Current lazy-creates a fresh instance on the next access, so it's
             // safe to clear to null here.

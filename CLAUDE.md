@@ -2450,6 +2450,64 @@ catalogue, results post `BestScore1:0` (distance) / `BestScore2:0` and read back
 - Left: one 50-60 ms gap every few seconds on the phone (a missed display refresh, not GC, not file
   I/O) and ~120-500 ms at a run's end (the game's own sync and save, ~600 file calls).
 
+### WP7 titles with their own native DLL run it on the WP8 runtime (patcher v66, 2026-11-21)
+
+A few partner-studio WP7 XNA titles shipped a native ARM DLL and reached it through
+`Microsoft.Phone.InteropServices` (`ComBridge.RegisterComDll`, `[ComImport]` classes,
+`GCHandle`, `Marshal`). **Amazing Alex** v1.0.7.0 (Rovio's Fusion engine: `Fusion.dll` +
+`Fusion.Interop.dll` managed, `AmazingAlex-native.dll` native) is the reference case; it used to
+die in `Game1` on the missing assembly. The managed side runs as shipped; the DLL runs on the WP8
+native runtime's emulator.
+
+| piece | where |
+| --- | --- |
+| `ComBridge`, `GCHandle`, `Marshal` (namespace `Microsoft.Phone.InteropServices`) | `WPR.Framework.Phone/InteropServices/`; the patcher renames the assembly reference to `Microsoft.Phone` (same version and key) |
+| `new C()` of a `[ComImport]` class | patcher: `ldtoken C; call ComInterop.CreateComObject` (only in a module that referenced `Microsoft.Phone.InteropServices`); `Marshal.ReleaseComObject` accepts the bridge's proxies everywhere |
+| per-launch host | `WPR.Xna.Rhi.NativeComBackend` (factory set in `ApplicationLaunch`, reset in `ResetWprSingletons`) -> `WPR.Wp8Native.Wp7ComHost` |
+| Windows CE 7 image (machine 0x01C2, Thumb-2) | `PeImage.IsArm`; COREDLL imports are by ordinal, named by `CoreDllOrdinals` (mingw-w64's `coredll.def` plus CE 7 extras) |
+| CE-only exports and ABI differences | `CoreDllLibrary.cs` (`coredll!` handlers, tried before the plain name): soft-float maths, `__rt_*` division, `CreateThread`, CE `setjmp`, the vector constructor/destructor iterators |
+
+**The bridge** (`Wp7ComHost`): the DLL runs on its own OS thread. A call on a native object (a
+`DispatchProxy`, `Wp7GuestObject`) is queued to the guest thread serving the calling managed thread
+(the main one for the game thread, a lane guest thread for any other) and waited for. A native call
+on a managed object goes through a CCW (trap vtable) and is run on the managed thread that is waiting
+on the guest, so XNA stays on the game thread; a native call that managed code makes meanwhile runs
+on that same parked guest thread (`Callback.Nested`). Both sides spin up to 2 ms before parking
+(`SpinFor`): a frame makes dozens of crossings. CE ABI: floats and doubles in core registers, no
+even-register alignment for 64-bit arguments. Slots are 3 + metadata-token order; `[retval]` is a
+trailing out pointer; out strings are allocated on the guest heap.
+
+**Pinned arrays**: native code writes straight into arrays Fusion pins (vertices, texture memory,
+file reads). `GCHandle.AddrOfPinnedObject` records them in `PinnedArrays`; the bridge gives each a
+mirror in guest memory, copied in and out at every crossing on the pinning thread, and freed when
+the handle is freed. **The cost is the total size of what is pinned, per crossing**, so a title that
+keeps a big array pinned across frames would pay for it every call. A host pointer in no pinned
+array, followed by a size argument, is copied to a temporary guest buffer and back.
+
+**C++ exceptions on CE** (`CxxExceptionModel.WindowsCe`, `ArmUnwinder.RunWindowsCe`): .pdata is
+(absolute address, flags: prologue and function length in halfwords, exception flag); the handler
+and its FuncInfo sit in the 8 bytes before the function. FuncInfo is the 0x19930522 layout with
+**absolute** pointers and a 20-byte HandlerType (handler at +16). There is no unwind program: the
+prologue is decoded (`push`, `push.w`, `sub sp`, `vpush`, `add r11, sp, #n`). The establisher frame
+is the stack pointer at `mov r7, sp`, **not** the end of the prologue (CE prologues reserve
+outgoing-argument space after it; counting it shifted every funclet 8 bytes and a destructor wrote
+into code). Funclets take the frame in r3. Alex throws `io::IOException` for every missing save file
+on a first run and catches it.
+
+**Paths**: `\Applications\Data\{ProductId}\Data\IsolatedStore\…` resolves to the title's per-game
+store (`PerGameIsolatedStorage.GameRoot`), the same folder its managed side writes.
+
+Log: `[wpr-com]` (Trace): `RegisterComDll(…) = S_OK`, `created FusionGameClass`, a failed call
+names the throws behind it, and a stop prints the frame chain (`frames:` via r11) and the threads.
+
+Verified 2026-11-21 on Linux only, with `/tmp/wp7probe2`-style harness (real DLL, managed stubs for
+Fusion's graphics/file proxies): DllMain, the class factory, Initialize, the splash, fonts, every
+level `.plist`, menu reached, 1,200 frames at ~1 ms each. **Not run with the real Fusion managed
+code, on Windows, Android or the S23**: that is the next step. Not done: connection-point events
+(Fusion does not subscribe), a second native DLL per title, VFP registers across a catch.
+
+**Patcher table change (v66)**: automatic repatch on next launch on both heads. Not identity-binding.
+
 ### Asphalt 7: Heat races: cube maps, and vertex copies that reuse one whole-buffer copy (2026-10-28)
 
 Asphalt 7 (`013e9108-…`, Gameloft) is a WP8 Direct3D/XAML title: `Asphalt7HybridComponent.dll`

@@ -446,7 +446,7 @@ namespace WPR
         // Bumped to 65: Windows.Phone.System.Analytics.HostInformation joined WPR.Framework.WinRT
         // (Asphalt 7's page reads PublisherHostId), so WinRtImplementedTypes rescopes it.
         // Not identity-binding.
-        public static int Version => 65;
+        public static int Version => 66;
 
         private AssemblyNameReference FnaBackendRef;
         private AssemblyNameReference FNARef;
@@ -2431,6 +2431,89 @@ namespace WPR
         /// <c>newobj</c> becomes a static <c>call</c> with the same arguments and the same result
         /// on the stack.
         /// </summary>
+        /// <summary>
+        /// WP7 native interop (Amazing Alex's Fusion engine). <c>newobj</c> of a <c>[ComImport]</c>
+        /// class becomes <c>ldtoken C; call ComInterop.CreateComObject</c>, which asks the bridge to
+        /// native code for an instance (there is no COM activation off Windows, and on Windows the
+        /// class is registered nowhere); only in a module that references
+        /// <c>Microsoft.Phone.InteropServices</c>. And every <c>Marshal.ReleaseComObject</c> goes to
+        /// <see cref="WPR.Xna.Compat.ComInterop.ReleaseComObject"/>, which accepts the bridge's
+        /// proxies (the BCL throws on anything that is not a runtime COM object).
+        /// </summary>
+        private static void RedirectComInteropCalls(ModuleDefinition module, bool usesNativeInterop)
+        {
+            MethodReference? create = null;
+            MethodReference? release = null;
+            int created = 0, released = 0;
+
+            foreach (TypeDefinition type in module.GetTypes())
+            {
+                foreach (MethodDefinition method in type.Methods)
+                {
+                    if (!method.HasBody)
+                    {
+                        continue;
+                    }
+
+                    ILProcessor il = method.Body.GetILProcessor();
+                    foreach (Instruction ins in method.Body.Instructions.ToArray())
+                    {
+                        if (ins.Operand is not MethodReference callee)
+                        {
+                            continue;
+                        }
+
+                        if (ins.OpCode == OpCodes.Call
+                            && callee.Name == "ReleaseComObject"
+                            && callee.DeclaringType?.FullName == "System.Runtime.InteropServices.Marshal")
+                        {
+                            release ??= module.ImportReference(
+                                typeof(WPR.Xna.Compat.ComInterop).GetMethod(nameof(WPR.Xna.Compat.ComInterop.ReleaseComObject))!);
+                            ins.Operand = release;
+                            released += 1;
+                            continue;
+                        }
+
+                        if (!usesNativeInterop
+                            || ins.OpCode != OpCodes.Newobj
+                            || callee.Parameters.Count != 0)
+                        {
+                            continue;
+                        }
+
+                        TypeDefinition? declaring;
+                        try
+                        {
+                            declaring = callee.DeclaringType.Resolve();
+                        }
+                        catch (Exception)
+                        {
+                            declaring = null;
+                        }
+
+                        if (declaring is not { IsImport: true, IsClass: true, IsInterface: false })
+                        {
+                            continue;
+                        }
+
+                        create ??= module.ImportReference(
+                            typeof(WPR.Xna.Compat.ComInterop).GetMethod(nameof(WPR.Xna.Compat.ComInterop.CreateComObject))!);
+                        il.InsertBefore(ins, il.Create(OpCodes.Ldtoken, callee.DeclaringType));
+                        ins.OpCode = OpCodes.Call;
+                        ins.Operand = create;
+                        created += 1;
+                    }
+                }
+            }
+
+            if (created + released > 0)
+            {
+                Log.Info(LogCategory.AppInstall,
+                    $"[com-fixup] {module.Name}: {created} [ComImport] activation(s) go to the native-code bridge, " +
+                    $"{released} ReleaseComObject call(s) accept its proxies.");
+            }
+        }
+
         private static void RedirectNamedMutexCalls(ModuleDefinition module)
         {
             const string MutexTypeName = "System.Threading.Mutex";
@@ -2949,6 +3032,7 @@ namespace WPR
             // The module's reference to WPR.Framework.WinRT, found below or added on first use by
             // RescopeTypeReference (WinRtProjectionTypes). One instance, so no duplicate AssemblyRef.
             AssemblyNameReference? winRtScope = null;
+            bool usesNativeInterop = false;
 
             // module.AssemblyReferences cycle
             foreach (var refer in module.AssemblyReferences)
@@ -2986,6 +3070,16 @@ namespace WPR
                     // 8.0.0.0; a request above what is loaded does not bind.
                     WinmdStubber.RetargetWinRtProjection(refer);
                     winRtScope = refer;
+                }
+                else if (refer.Name.Equals("Microsoft.Phone.InteropServices",
+                    StringComparison.OrdinalIgnoreCase))
+                {
+                    // Version 66: WP7's native-interop assembly (ComBridge, its GCHandle and
+                    // Marshal) is implemented in the Microsoft.Phone facade, in its own namespace.
+                    // Both shipped as 7.0.0.0 with the same key, so only the name changes, and the
+                    // reference binds exactly as the title's own Microsoft.Phone one does.
+                    usesNativeInterop = true;
+                    refer.Name = MicrosoftPhoneRef.Name;
                 }
                 else if (refer.Name.Equals("mscorlib.Extensions",
                     StringComparison.OrdinalIgnoreCase))
@@ -3172,6 +3266,10 @@ namespace WPR
 
             // Android cannot create a named Mutex; NamedMutex falls back to a process-local one.
             RedirectNamedMutexCalls(module);
+
+            // WP7 native interop: new of a [ComImport] class goes to the bridge, and
+            // Marshal.ReleaseComObject accepts its proxies.
+            RedirectComInteropCalls(module, usesNativeInterop);
 
             // Hand a game back the metadata tokens its own assembly shipped with. Same placement
             // reasoning as the call above: the shim assembly is already referenced by now. Must

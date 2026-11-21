@@ -77,11 +77,25 @@ namespace WPR.Wp8Native
         private readonly ArmEmulator _emulator;
         private readonly long _imageBase;
 
-        public CxxExceptionModel(ArmEmulator emulator, long imageBase)
+        public CxxExceptionModel(ArmEmulator emulator, long imageBase, bool windowsCe = false)
         {
             _emulator = emulator;
             _imageBase = imageBase;
+            WindowsCe = windowsCe;
         }
+
+        /// <summary>
+        /// A Windows CE image (WP7 native code, machine 0x01C2). Its compiler wrote the same
+        /// FuncInfo (magic 0x19930522) with two differences: every cross-reference - in the
+        /// FuncInfo, its maps and the ThrowInfo - is an absolute address rather than an RVA, so
+        /// "the image base" is 0 throughout; and a HandlerType has a fifth word,
+        /// <c>frameNestLevel</c>, before the handler address (20 bytes, handler at +16).
+        /// </summary>
+        public bool WindowsCe { get; }
+
+        private int HandlerTypeSize => WindowsCe ? 20 : 16;
+
+        private int HandlerAddressOffset => WindowsCe ? 16 : 12;
 
         /// <summary>
         /// The image a frame's RVAs are relative to. With package DLLs loaded (ModuleLoader.cs)
@@ -89,7 +103,7 @@ namespace WPR.Wp8Native
         /// different image, so every RVA is resolved against its own frame's image, never one
         /// global base. A frame from before multi-module unwinding carries 0: the main image.
         /// </summary>
-        private long BaseOf(UnwoundFrame frame) => frame.ImageBase != 0 ? frame.ImageBase : _imageBase;
+        public long BaseOf(UnwoundFrame frame) => WindowsCe ? 0 : frame.ImageBase != 0 ? frame.ImageBase : _imageBase;
 
         /// <summary>
         /// Reads the ThrowInfo handed to <c>_CxxThrowException</c>, listing every type the
@@ -104,7 +118,7 @@ namespace WPR.Wp8Native
                 // The ThrowInfo and everything it names are RVAs of the image that threw, which
                 // is whichever module the ThrowInfo itself lives in.
                 long moduleBase = _emulator.ModuleBaseOf(throwInfo);
-                long imageBase = moduleBase != 0 ? moduleBase : _imageBase;
+                long imageBase = WindowsCe ? 0 : moduleBase != 0 ? moduleBase : _imageBase;
                 uint catchableArrayRva = _emulator.ReadUInt32(throwInfo + 12);
                 if (catchableArrayRva != 0)
                 {
@@ -294,9 +308,9 @@ namespace WPR.Wp8Native
 
                 for (int c = 0; c < catchCount && c < 16 && handlerArrayRva != 0; c++)
                 {
-                    long handler = imageBase + handlerArrayRva + (c * 16);
+                    long handler = imageBase + handlerArrayRva + (c * HandlerTypeSize);
                     uint typeRva = _emulator.ReadUInt32(handler + 4, 0);
-                    uint funcletRva = _emulator.ReadUInt32(handler + 12, 0);
+                    uint funcletRva = _emulator.ReadUInt32(handler + HandlerAddressOffset, 0);
                     string caught = typeRva == 0 ? "..." : ReadTypeName(imageBase, typeRva);
                     text.Append($" catch({caught})@0x{funcletRva:X8}");
                 }
@@ -356,10 +370,10 @@ namespace WPR.Wp8Native
                     // RVA - that "offset" is the next entry's handler address, read one field
                     // early. That is what the report meant by "the matching catch has no
                     // funclet address", and it cost a Lua exception its handler.
-                    long handler = imageBase + handlerArrayRva + (c * 16);
+                    long handler = imageBase + handlerArrayRva + (c * HandlerTypeSize);
                     uint typeRva = _emulator.ReadUInt32(handler + 4, 0);
                     int catchObject = (int)_emulator.ReadUInt32(handler + 8, 0);
-                    uint funcletRva = _emulator.ReadUInt32(handler + 12, 0);
+                    uint funcletRva = _emulator.ReadUInt32(handler + HandlerAddressOffset, 0);
 
                     // A null type descriptor is catch(...), which accepts anything.
                     string caught = typeRva == 0 ? "..." : ReadTypeName(imageBase, typeRva);

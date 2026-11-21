@@ -294,6 +294,17 @@ namespace WPR.Wp8Native
                 return Path.Combine(_writeRoot, relative);
             }
 
+            // Windows CE (WP7 native code): the app's isolated store is
+            // \Applications\Data\{ProductId}\Data\IsolatedStore, which is the host's per-game store
+            // the managed side uses too (the sandbox, for a WP7 title).
+            const string CeIsolatedStore = "/Data/IsolatedStore";
+            int ceStore = path.IndexOf(CeIsolatedStore, StringComparison.OrdinalIgnoreCase);
+            if (ceStore >= 0 && path.TrimStart('/').StartsWith("Applications/Data/", StringComparison.OrdinalIgnoreCase))
+            {
+                writable = true;
+                return Path.Combine(_writeRoot, path[(ceStore + CeIsolatedStore.Length)..].TrimStart('/'));
+            }
+
             // A WP8 package is installed at something like
             // C:\Applications\Install\{ProductId}\Install\..., so anything after the last
             // "Install" segment is the path within the package.
@@ -409,7 +420,7 @@ namespace WPR.Wp8Native
                 {
                     _lastError = ErrorFileNotFound;
                     OpenFailed++;
-                    Log.Add($"fopen(\"{path}\", \"{mode}\") -> not found");
+                    Log.Add($"fopen(\"{path}\", \"{mode}\") -> not found"); 
                     _frame.Return(0);
                     return;
                 }

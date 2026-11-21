@@ -80,6 +80,9 @@ namespace WPR.Wp8Native
             public required long CodeEnd { get; init; }
             public required uint[] BeginRvas { get; init; }
             public required uint[] UnwindData { get; init; }
+
+            /// <summary>Windows CE's .pdata: absolute begin addresses, and a flags word instead of unwind data (see <see cref="RunWindowsCe"/>).</summary>
+            public bool WindowsCe { get; init; }
         }
 
         private readonly List<Table> _tables = new();
@@ -117,11 +120,17 @@ namespace WPR.Wp8Native
             uint[] begin = new uint[count];
             uint[] unwind = new uint[count];
 
+            bool windowsCe = image.Machine == PeImage.MachineArmThumb;
             long table = imageBase + image.ExceptionDirectoryRva;
             for (int i = 0; i < count; i++)
             {
                 begin[i] = _emulator.ReadUInt32(table + (i * 8));
                 unwind[i] = _emulator.ReadUInt32(table + (i * 8) + 4);
+                if (windowsCe)
+                {
+                    // An address (relocated with the image, Thumb bit set), not an RVA.
+                    begin[i] = (uint)(((long)begin[i] & ~1L) - imageBase);
+                }
             }
 
             long start = imageBase + code.Value.VirtualAddress;
@@ -132,6 +141,7 @@ namespace WPR.Wp8Native
                 CodeEnd = start + code.Value.MappedSize,
                 BeginRvas = begin,
                 UnwindData = unwind,
+                WindowsCe = windowsCe,
             });
         }
 
@@ -264,6 +274,30 @@ namespace WPR.Wp8Native
                 uint unwind = table.UnwindData[index];
                 long entrySp = state.Sp;
 
+                if (table.WindowsCe)
+                {
+                    long[] here = (long[])state.Registers.Clone();
+                    RunWindowsCe(table, index, currentPc, state, out bool ceHandler, out long funcInfo, out long establisher);
+                    frames.Add(new UnwoundFrame(currentPc, (uint)(table.ImageBase + functionRva), state.Sp - establisher, ceHandler, "ce")
+                    {
+                        HandlerRva = ceHandler ? _emulator.ReadUInt32(table.ImageBase + functionRva - 8) : 0,
+                        HandlerDataRva = (uint)funcInfo,
+                        FramePointer = establisher,
+                        Registers = here,
+                        ImageBase = table.ImageBase,
+                    });
+
+                    long returnTo = state.Lr & ~1L;
+                    if (TableFor(returnTo) is not { } caller || FindIndex(caller, returnTo) < 0 || returnTo == (currentPc & ~1L))
+                    {
+                        frames.Add(new UnwoundFrame(returnTo, 0, 0, false, "walk stopped: return address is not in executable code"));
+                        break;
+                    }
+
+                    currentPc = returnTo;
+                    continue;
+                }
+
                 // Snapshot before unwinding: this is the register state *inside* this frame.
                 long[] registersHere = (long[])state.Registers.Clone();
 
@@ -308,6 +342,167 @@ namespace WPR.Wp8Native
             }
 
             return frames;
+        }
+
+        /// <summary>
+        /// Windows CE's ARM unwinding (WP7 native code): a .pdata entry is the function's address
+        /// and a word of flags - prologue length in halfwords (bits 0-7), function length in
+        /// halfwords for Thumb (bits 8-29), a 32-bit-code flag (30) and an exception flag (31),
+        /// which means the eight bytes before the function hold its language handler and that
+        /// handler's data (the FuncInfo). There is no unwind program: the unwinder reads the
+        /// prologue itself. CE's Thumb-2 compiler writes a fixed shape -
+        /// <c>[push {r0-r3}] push {…, r11, lr}; add r11, sp, #n; [vpush]; sub sp, #m; mov r7, sp</c> -
+        /// so this decodes the pushes and stack adjustments, finds the caller's stack pointer
+        /// through r11 where the prologue set it, and pops the saved registers.
+        /// </summary>
+        /// <remarks>
+        /// <paramref name="establisher"/> is the stack pointer at the end of the prologue: what
+        /// the function's r7 holds, the frame its funclets are handed (in r3) and the stack a
+        /// catch continues on. Only the core registers are restored; VFP saves are skipped over.
+        /// </remarks>
+        private void RunWindowsCe(Table table, int index, long pc, UnwindState state, out bool hasHandler, out long funcInfo, out long establisher)
+        {
+            long start = table.ImageBase + table.BeginRvas[index];
+            uint flags = table.UnwindData[index];
+            int prologBytes = (int)(flags & 0xFF) * 2;
+            long functionBytes = ((flags >> 8) & 0x3FFFFF) * (((flags >> 30) & 1) != 0 ? 4 : 2);
+            hasHandler = (flags >> 31) != 0;
+            funcInfo = hasHandler ? _emulator.ReadUInt32(start - 4) : 0;
+
+            if ((pc & ~1L) >= start + functionBytes)
+            {
+                // Past the function .pdata describes: a leaf with no entry of its own, whose
+                // return address is still in lr.
+                hasHandler = false;
+                funcInfo = 0;
+                establisher = state.Sp;
+                return;
+            }
+
+            var saved = new List<(int Register, int Offset)>(); // offset below the entry sp
+            int below = 0;          // bytes pushed or allocated so far
+            int fpBelow = -1;       // r11 = entry sp - fpBelow, once set
+            int frameBelow = -1;    // r7 = entry sp - frameBelow (mov r7, sp)
+            long address = start;
+            long end = Math.Min(start + prologBytes, pc & ~1L);
+            while (address < end)
+            {
+                ushort first = (ushort)_emulator.ReadUInt32(address);
+                bool wide = (first & 0xF800) is 0xE800 or 0xF000 or 0xF800;
+                ushort second = wide ? (ushort)(_emulator.ReadUInt32(address) >> 16) : (ushort)0;
+
+                if (!wide && (first & 0xFE00) == 0xB400)
+                {
+                    int list = (first & 0xFF) | ((first & 0x100) != 0 ? 1 << 14 : 0);
+                    PushList(list);
+                }
+                else if (wide && first == 0xE92D)
+                {
+                    PushList(second);
+                }
+                else if (wide && first == 0xF84D && (second & 0x0FFF) == 0x0D04)
+                {
+                    below += 4;
+                    saved.Add((second >> 12, below));
+                }
+                else if (!wide && (first & 0xFF80) == 0xB080)
+                {
+                    below += (first & 0x7F) * 4;
+                }
+                else if (wide && (first & 0xFBEF) == 0xF1AD && (second & 0x8F00) == 0x0D00)
+                {
+                    below += (int)ThumbExpandImmediate(first, second);
+                }
+                else if (wide && (first & 0xFBFF) == 0xF2AD && (second & 0x8F00) == 0x0D00)
+                {
+                    below += Immediate12(first, second);
+                }
+                else if (wide && first == 0xED2D && (second & 0x0E00) == 0x0A00)
+                {
+                    below += (second & 0xFF) * 4;
+                }
+                else if (!wide && first == 0x466F)
+                {
+                    // mov r7, sp: the frame base the body (and its funclets) address locals from.
+                    // A prologue often goes on to reserve outgoing-argument space below it.
+                    frameBelow = below;
+                }
+                else if (wide && (first & 0xFBFF) == 0xF20D && (second & 0x8F00) == 0x0B00)
+                {
+                    fpBelow = below - Immediate12(first, second);
+                }
+                else if (wide && (first & 0xFBEF) == 0xF10D && (second & 0x8F00) == 0x0B00)
+                {
+                    fpBelow = below - (int)ThumbExpandImmediate(first, second);
+                }
+
+                address += wide ? 4 : 2;
+            }
+
+            long entry = fpBelow >= 0 && state.Known[11]
+                ? state.Registers[11] + fpBelow
+                : state.Sp + below;
+            establisher = entry - (frameBelow >= 0 ? frameBelow : below);
+
+            long lr = state.Lr;
+            foreach ((int register, int offset) in saved)
+            {
+                long value = _emulator.ReadUInt32(entry - offset);
+                if (register == 14)
+                {
+                    lr = value;
+                }
+                else if (register is >= 4 and <= 12)
+                {
+                    state.Registers[register] = value;
+                    state.Known[register] = true;
+                }
+            }
+
+            state.Sp = entry;
+            state.Lr = lr;
+            state.Registers[13] = entry;
+            state.Registers[14] = lr;
+
+            void PushList(int list)
+            {
+                int count = System.Numerics.BitOperations.PopCount((uint)list);
+                int slot = 0;
+                for (int register = 0; register < 16; register++)
+                {
+                    if ((list & (1 << register)) != 0)
+                    {
+                        // The lowest register goes lowest: slot 0 sits furthest below the entry.
+                        saved.Add((register, below + ((count - slot) * 4)));
+                        slot++;
+                    }
+                }
+
+                below += count * 4;
+            }
+        }
+
+        private static int Immediate12(ushort first, ushort second)
+            => ((first >> 10) & 1) << 11 | ((second >> 12) & 7) << 8 | (second & 0xFF);
+
+        private static uint ThumbExpandImmediate(ushort first, ushort second)
+        {
+            int imm12 = Immediate12(first, second);
+            uint imm8 = (uint)(imm12 & 0xFF);
+            if ((imm12 >> 10) == 0)
+            {
+                return ((imm12 >> 8) & 3) switch
+                {
+                    0 => imm8,
+                    1 => (imm8 << 16) | imm8,
+                    2 => (imm8 << 24) | (imm8 << 8),
+                    _ => (imm8 << 24) | (imm8 << 16) | (imm8 << 8) | imm8,
+                };
+            }
+
+            uint unrotated = 0x80 | (imm8 & 0x7F);
+            int rotation = (imm12 >> 7) & 0x1F;
+            return (unrotated >> rotation) | (unrotated << (32 - rotation));
         }
 
         /// <summary>
