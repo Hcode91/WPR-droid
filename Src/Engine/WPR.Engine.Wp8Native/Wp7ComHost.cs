@@ -1218,10 +1218,26 @@ namespace WPR.Wp8Native
 
                 foreach ((IntPtr host, long guest, int size) in hostBuffers)
                 {
+                    if (guest < 0)
+                    {
+                        // a low copy of part of a pinned array: back into the array, which
+                        // SyncToGuest below then copies to its guest mirror
+                        unsafe
+                        {
+                            System.Buffer.MemoryCopy((void*)host, (void*)(IntPtr)(-guest), size, size);
+                        }
+
+                        LowHostMemory.Return(host);
+                        continue;
+                    }
+
                     byte[] bytes = new byte[size];
                     Marshal.Copy(host, bytes, 0, size);
                     e.WriteMemory(guest, bytes);
-                    Marshal.FreeHGlobal(host);
+                    if (!LowHostMemory.Return(host))
+                    {
+                        Marshal.FreeHGlobal(host);
+                    }
                 }
 
                 SyncToGuest(owner);
@@ -1549,12 +1565,38 @@ namespace WPR.Wp8Native
 
             if (PinnedArrays.FindMirror(guest) is { } entry)
             {
-                return entry.Address + (nint)(guest - entry.Mirror);
+                IntPtr inArray = entry.Address + (nint)(guest - entry.Mirror);
+                if (size <= 0 || (long)inArray + size <= 0x7FFFFFFF)
+                {
+                    return inArray;
+                }
+
+                // a pinned array above 2 GB: managed code gets a low copy, written back into the array
+                IntPtr low = LowHostMemory.Rent(size);
+                if (low == IntPtr.Zero)
+                {
+                    return inArray;
+                }
+
+                unsafe
+                {
+                    System.Buffer.MemoryCopy((void*)inArray, (void*)low, size, size);
+                }
+
+                buffers.Add((low, -(long)inArray, size));
+                return low;
             }
 
             if (size > 0)
             {
-                IntPtr host = Marshal.AllocHGlobal(size);
+                // below 2 GB when it can be: WP7 code does IntPtr arithmetic through ToInt32()
+                IntPtr host = LowHostMemory.Rent(size);
+                if (host == IntPtr.Zero)
+                {
+                    NoteOnce("lowmem", "no host memory below 2 GB; a buffer for managed code is above it, and ToInt32() on it will overflow");
+                    host = Marshal.AllocHGlobal(size);
+                }
+
                 Marshal.Copy(_e!.ReadMemory(guest, size), 0, host, size);
                 buffers.Add((host, guest, size));
                 return host;
