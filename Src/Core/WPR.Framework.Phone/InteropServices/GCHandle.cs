@@ -10,7 +10,7 @@ namespace Microsoft.Phone.InteropServices
     /// Over the BCL's handle; a pinned array's address is recorded in <see cref="PinnedArrays"/>, so
     /// the bridge to native code (which runs in emulated memory) can keep a copy of it there.
     /// </summary>
-    public struct GCHandle
+    public sealed class GCHandle
     {
         private System.Runtime.InteropServices.GCHandle _handle;
 
