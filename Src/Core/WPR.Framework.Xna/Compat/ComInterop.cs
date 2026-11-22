@@ -80,7 +80,7 @@ namespace WPR.Xna.Compat
 
         public static void Note(Array array, IntPtr address)
         {
-            long length = (long)System.Buffer.ByteLength(array);
+            long length = ByteLength(array);
             lock (Gate)
             {
                 foreach (Entry existing in Live)
@@ -92,6 +92,42 @@ namespace WPR.Xna.Compat
                 }
 
                 Live.Add(new Entry(array, address, length, Environment.CurrentManagedThreadId));
+            }
+        }
+
+        /// <summary>
+        /// The array's size in bytes. <see cref="System.Buffer.ByteLength"/> accepts arrays of
+        /// primitives only, and titles pin arrays of their own structs (Amazing Alex's vertices), so
+        /// the element stride is read off the pinned array itself.
+        /// </summary>
+        internal static long ByteLength(Array array)
+        {
+            long count = array.LongLength;
+            if (count == 0)
+            {
+                return 0;
+            }
+
+            Type element = array.GetType().GetElementType()!;
+            if (element.IsPrimitive)
+            {
+                return System.Buffer.ByteLength(array);
+            }
+
+            if (count > 1)
+            {
+                long stride = (long)Marshal.UnsafeAddrOfPinnedArrayElement(array, 1)
+                    - (long)Marshal.UnsafeAddrOfPinnedArrayElement(array, 0);
+                return stride * count;
+            }
+
+            try
+            {
+                return Marshal.SizeOf(element);
+            }
+            catch (ArgumentException)
+            {
+                return IntPtr.Size;
             }
         }
 
