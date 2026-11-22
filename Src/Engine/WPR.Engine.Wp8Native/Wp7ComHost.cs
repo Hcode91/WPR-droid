@@ -308,10 +308,10 @@ namespace WPR.Wp8Native
 
                 string? fault = _e.Run(start, long.MaxValue / 4);
                 Log($"native code stopped: {fault ?? _e.StopReason ?? (_e.HeapExhausted ? "the guest heap is full" : "returned")}");
-                if ((fault is not null || _e.HeapExhausted) && !_closing)
+                if (!_closing)
                 {
                     Log("  " + DescribeFrames());
-                    foreach (string line in _e.DescribeThreads())
+                    foreach (string line in _e.DescribeThreads(frames: true))
                     {
                         Log("  " + line);
                     }

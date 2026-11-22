@@ -48,6 +48,12 @@ namespace WPR.Wp8Native
             public long WakeAt { get; set; }
 
             /// <summary>
+            /// Whether what it waits for is finished by the host, not by another guest thread (a DNS
+            /// lookup, a socket): such a wait ends by itself, so it is never part of a deadlock.
+            /// </summary>
+            public bool HostDriven { get; set; }
+
+            /// <summary>
             /// Where it resumes (bit 0 = Thumb) when a time slice switched it out between two
             /// instructions rather than inside a trap; 0 otherwise. Its saved r12 is then its own
             /// value, not a resume address.
@@ -114,10 +120,12 @@ namespace WPR.Wp8Native
 
         private void ThreadNote(string line)
         {
-            if (_threadLog.Count < 200)
+            if (_threadLog.Count >= 200)
             {
-                _threadLog.Add(line);
+                _threadLog.RemoveAt(0);         // the latest are what explain a stop
             }
+
+            _threadLog.Add(line);
         }
 
         /// <summary>
@@ -272,6 +280,17 @@ namespace WPR.Wp8Native
                 next = PickNext(leaving);
             }
 
+            // A thread waiting for the host (a DNS lookup or a socket, in real time) will be
+            // runnable when that finishes: wait for it, as for a timed wait. Amazing Alex's main
+            // thread waited for its network thread, which was resolving a name, when a loader
+            // thread ended, and the run was stopped as a deadlock.
+            while (next is null && AnyHostDrivenWait(leaving))
+            {
+                waited = true;
+                Thread.Sleep(1);
+                next = PickNext(leaving);
+            }
+
             if (waited && next is not null)
             {
                 TimedWaitsWaitedOut++;
@@ -279,6 +298,19 @@ namespace WPR.Wp8Native
             }
 
             return next;
+        }
+
+        private bool AnyHostDrivenWait(GuestThread except)
+        {
+            foreach (GuestThread t in _threads)
+            {
+                if (t != except && !t.Finished && t.Registers is not null && t.Ready is not null && t.HostDriven)
+                {
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         private GuestThread? EarliestTimedWait(GuestThread except)
@@ -309,10 +341,16 @@ namespace WPR.Wp8Native
         /// How long a timed wait lasts; null for an untimed one. A thread that ends with every other
         /// thread blocked waits for the earliest of these to run out rather than calling it a deadlock.
         /// </param>
-        public bool BlockCurrentThread(Func<bool> ready, Action? onResume = null, string? why = null, TimeSpan? timeout = null)
+        public bool BlockCurrentThread(Func<bool> ready, Action? onResume = null, string? why = null, TimeSpan? timeout = null, bool hostDriven = false)
         {
             GuestThread me = CurrentThread;
             GuestThread? next = PickNext(me);
+            while (next is null && !ready() && AnyHostDrivenWait(me))
+            {
+                Thread.Sleep(1);                // another thread waits for the host: it will run
+                next = PickNext(me);
+            }
+
             if (next is null)
             {
                 if (!ready())
@@ -331,13 +369,69 @@ namespace WPR.Wp8Native
             me.WakeAt = timeout is { } t
                 ? System.Diagnostics.Stopwatch.GetTimestamp() + Math.Max(1, (long)(t.TotalSeconds * System.Diagnostics.Stopwatch.Frequency))
                 : 0;
+            me.HostDriven = hostDriven;
             Save(me);
             SwitchTo(next);
             return true;
         }
 
         /// <summary>One line per guest thread: running, blocked (on what, from where) or finished.</summary>
-        public IEnumerable<string> DescribeThreads()
+        public IEnumerable<string> DescribeThreads() => DescribeThreads(false);
+
+        /// <summary>
+        /// Each thread's state; with <paramref name="frames"/>, also the return addresses along its
+        /// r11 frame chain (the CE compiler keeps r11 as a frame pointer), for the threads that wait.
+        /// </summary>
+        public IEnumerable<string> DescribeThreads(bool frames)
+        {
+            foreach (string line in DescribeThreadStates())
+            {
+                yield return line;
+            }
+
+            if (!frames)
+            {
+                yield break;
+            }
+
+            foreach (GuestThread t in _threads)
+            {
+                if (t.Finished || t == _currentThread || t.Registers is not { } r)
+                {
+                    continue;
+                }
+
+                var chain = new List<string>();
+                try
+                {
+                    long fp = r[Index(Arm.UC_ARM_REG_R11)] & 0xFFFFFFFF;
+                    for (int i = 0; i < 16 && fp != 0 && (fp & 3) == 0; i++)
+                    {
+                        long next = ReadUInt32(fp);
+                        chain.Add($"0x{ReadUInt32(fp + 4):X8}");
+                        if (next <= fp)
+                        {
+                            break;
+                        }
+
+                        fp = next;
+                    }
+                }
+                catch (Exception)
+                {
+                    chain.Add("…");
+                }
+
+                yield return $"thread {t.Id} frames: r11=0x{r[Index(Arm.UC_ARM_REG_R11)] & 0xFFFFFFFF:X8} sp=0x{r[Index(Arm.UC_ARM_REG_SP)] & 0xFFFFFFFF:X8} " + string.Join(" < ", chain);
+            }
+
+            foreach (string note in _threadLog.TakeLast(12))
+            {
+                yield return "  " + note;
+            }
+        }
+
+        private IEnumerable<string> DescribeThreadStates()
         {
             foreach (GuestThread t in _threads)
             {
@@ -597,6 +691,7 @@ namespace WPR.Wp8Native
             me.OnResume = null;
             me.Why = null;
             me.WakeAt = 0;
+            me.HostDriven = false;
             me.PreemptedPc = here;
             Preemptions++;
             if (Preemptions <= 8)
@@ -705,6 +800,7 @@ namespace WPR.Wp8Native
             // what the trap's bx r12 jumps to.
             thread.Ready = null;
             thread.WakeAt = 0;
+            thread.HostDriven = false;
             Action? resumed = thread.OnResume;
             thread.OnResume = null;
             _currentThread = thread;

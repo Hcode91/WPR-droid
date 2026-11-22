@@ -327,7 +327,7 @@ namespace WPR.Wp8Native
             }
 
             _frame.Return(SocketError);
-            if (_emulator.BlockCurrentThread(() => ready() || NowMs >= deadline, Resume, why))
+            if (_emulator.BlockCurrentThread(() => ready() || NowMs >= deadline, Resume, why, hostDriven: true))
             {
                 return;
             }
